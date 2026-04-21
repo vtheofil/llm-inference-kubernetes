@@ -26,10 +26,9 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-// Ξεκίνα DB όταν ξεκινά ο server
+// Ξεκίνα DB όταν ξεκινά ο server (non-fatal — χωρίς DB τρέχει χωρίς RAG)
 initDB().catch((err) => {
-  console.error("DB init failed:", err.message);
-  process.exit(1);
+  console.warn("DB init failed (RAG disabled):", err.message);
 });
 
 // ─── Health ──────────────────────────────────────────────────────────────────
