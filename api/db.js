@@ -18,7 +18,7 @@ export async function initDB() {
       id        SERIAL PRIMARY KEY,
       content   TEXT    NOT NULL,
       source    TEXT,
-      embedding vector(768)
+      embedding vector(1536)
     )
   `);
   // IVFFlat index για γρήγορη cosine-similarity αναζήτηση

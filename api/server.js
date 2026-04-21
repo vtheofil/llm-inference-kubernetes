@@ -18,14 +18,12 @@ app.use((req, res, next) => {
 app.use(express.json({ limit: "2mb" }));
 
 const {
-  OLLAMA_BASE_URL = "http://localhost:11434/v1",
-  OLLAMA_MODEL    = "mistral:7b",
-  PORT            = "3001",
+  OPENAI_MODEL = "gpt-4o-mini",
+  PORT         = "3001",
 } = process.env;
 
 const openai = new OpenAI({
-  apiKey:  "ollama",
-  baseURL: OLLAMA_BASE_URL,
+  apiKey: process.env.OPENAI_API_KEY,
 });
 
 // Ξεκίνα DB όταν ξεκινά ο server
@@ -140,7 +138,7 @@ Base your answer on the data above. If exact data is missing, give a reasonable 
 
   try {
     const stream = await openai.chat.completions.create({
-      model: OLLAMA_MODEL,
+      model: OPENAI_MODEL,
       messages,
       stream: true,
     });
@@ -201,7 +199,7 @@ app.post("/chat", async (req, res) => {
     ];
 
     const response = await openai.chat.completions.create({
-      model: OLLAMA_MODEL,
+      model: OPENAI_MODEL,
       messages,
     });
 
