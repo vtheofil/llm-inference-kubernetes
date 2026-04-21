@@ -1,0 +1,6 @@
+node_modules/
+api/.env
+web/.env.local
+web/.next/
+*.log
+chroma_db/

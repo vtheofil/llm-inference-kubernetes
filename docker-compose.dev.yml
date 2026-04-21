@@ -1,0 +1,28 @@
+version: "3.8"
+
+# Τοπικό dev environment: Ollama + PostgreSQL με pgvector
+# Χρήση: docker compose -f docker-compose.dev.yml up -d
+
+services:
+  # Ollama τρέχει ήδη locally — δεν χρειάζεται container
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: ptyxiakh-postgres
+    environment:
+      POSTGRES_DB: ragdb
+      POSTGRES_USER: raguser
+      POSTGRES_PASSWORD: ragpass
+    ports:
+      - "5433:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U raguser -d ragdb"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pg_data:
