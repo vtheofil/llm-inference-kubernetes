@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-deployment
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: api
+  template:
+    metadata:
+      labels:
+        app: api
+    spec:
+      containers:
+        - name: api
+          image: vtheofil1/ptyxiakh-api:v1.0
+          ports:
+            - containerPort: 3001
+          env:
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: ptyxiakh-secret
+                  key: OPENAI_API_KEY
+            - name: CORS_ORIGIN
+              valueFrom:
+                secretKeyRef:
+                  name: ptyxiakh-secret
+                  key: CORS_ORIGIN
+            - name: PG_HOST
+              value: "db"
+            - name: PG_PORT
+              value: "5432"
+            - name: PG_DB
+              valueFrom:
+                secretKeyRef:
+                  name: ptyxiakh-secret
+                  key: PG_DB
+            - name: PG_USER
+              valueFrom:
+                secretKeyRef:
+                  name: ptyxiakh-secret
+                  key: PG_USER
+            - name: PG_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: ptyxiakh-secret
+                  key: PG_PASSWORD
+            - name: PORT
+              value: "3001"
+            - name: OPENAI_MODEL
+              value: "gpt-4o-mini"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
