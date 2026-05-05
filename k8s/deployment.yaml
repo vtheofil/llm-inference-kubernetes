@@ -1,0 +1,198 @@
+---
+# ── ChromaDB Deployment + PVC ─────────────────────────────────────────────────
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: chroma-pvc
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chromadb-deployment
+  labels:
+    app: chromadb
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: chromadb
+  template:
+    metadata:
+      labels:
+        app: chromadb
+    spec:
+      containers:
+        - name: chromadb
+          image: chromadb/chroma:latest
+          ports:
+            - containerPort: 8000
+          volumeMounts:
+            - name: chroma-storage
+              mountPath: /chroma/chroma
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "512Mi"
+            limits:
+              cpu: "500m"
+              memory: "1Gi"
+          readinessProbe:
+            httpGet:
+              path: /api/v2/heartbeat
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+      volumes:
+        - name: chroma-storage
+          persistentVolumeClaim:
+            claimName: chroma-pvc
+
+---
+# ── Backend Deployment (FastAPI + Ollama sidecar) ────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend-deployment
+  labels:
+    app: backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      # Give the pod extra time — Ollama needs to start and load the model
+      terminationGracePeriodSeconds: 60
+
+      # Init container: runs ingest.py once before the main containers start.
+      # It waits for both ChromaDB and Ollama to be ready.
+      initContainers:
+        - name: ingest
+          image: vtheofil1/ptyxiakh-backend:latest
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              echo "Init: waiting for ChromaDB …"
+              until curl -sf http://chromadb-service:8000/api/v2/heartbeat; do sleep 3; done
+              echo "Init: running ingest …"
+              python -m app.ingest
+              echo "Init: done."
+          envFrom:
+            - configMapRef:
+                name: travel-assistant-config
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "2000m"
+              memory: "4Gi"
+
+      containers:
+        # ── Main container: FastAPI backend ───────────────────────────────────
+        - name: backend
+          image: vtheofil1/ptyxiakh-backend:latest
+          # Override entrypoint — init container already ran ingest
+          command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: travel-assistant-config
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "2000m"
+              memory: "4Gi"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 60
+            periodSeconds: 20
+
+        # ── Sidecar container: Ollama (Mistral 7B) ────────────────────────────
+        # Runs inside the same pod — backend accesses it via localhost:11434
+        - name: ollama
+          image: ollama/ollama:latest
+          ports:
+            - containerPort: 11434
+          volumeMounts:
+            - name: ollama-models
+              mountPath: /root/.ollama
+          resources:
+            requests:
+              cpu: "1000m"
+              memory: "4Gi"
+            limits:
+              cpu: "2000m"
+              memory: "8Gi"
+          readinessProbe:
+            httpGet:
+              path: /api/tags
+              port: 11434
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 20
+
+      volumes:
+        - name: ollama-models
+          emptyDir: {}   # replace with a PVC in production to persist model downloads
+
+---
+# ── Gradio Deployment ─────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gradio-deployment
+  labels:
+    app: gradio
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gradio
+  template:
+    metadata:
+      labels:
+        app: gradio
+    spec:
+      containers:
+        - name: gradio
+          image: vtheofil1/ptyxiakh-gradio:latest
+          ports:
+            - containerPort: 7860
+          envFrom:
+            - configMapRef:
+                name: travel-assistant-config
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 7860
+            initialDelaySeconds: 15
+            periodSeconds: 10

@@ -1,0 +1,51 @@
+---
+# ── ChromaDB — ClusterIP (internal only) ─────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: chromadb-service
+  labels:
+    app: chromadb
+spec:
+  type: ClusterIP
+  selector:
+    app: chromadb
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+
+---
+# ── Backend (FastAPI) — ClusterIP (internal; HPA targets this deployment) ─────
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-service
+  labels:
+    app: backend
+spec:
+  type: ClusterIP
+  selector:
+    app: backend
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+
+---
+# ── Gradio UI — NodePort (accessible from browser via VM public IP) ────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: gradio-service
+  labels:
+    app: gradio
+spec:
+  type: NodePort
+  selector:
+    app: gradio
+  ports:
+    - name: http
+      port: 7860
+      targetPort: 7860
+      nodePort: 30000   # access at http://<VM-IP>:30000

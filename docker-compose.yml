@@ -1,0 +1,100 @@
+version: "3.9"
+
+# ── Travel Assistant — local development stack ────────────────────────────────
+#
+# Services:
+#   ollama    — local LLM server (Mistral 7B must already be pulled)
+#   chromadb  — vector store
+#   backend   — FastAPI + RAG pipeline
+#   gradio    — Chat UI
+#
+# Quick start:
+#   docker compose up --build
+#
+# Pull Mistral first (one-time):
+#   docker compose run --rm ollama ollama pull mistral
+
+services:
+
+  # ── Ollama (Mistral 7B) ────────────────────────────────────────────────────
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama   # persist downloaded models
+    deploy:
+      resources:
+        limits:
+          memory: 8g
+          cpus: "2.0"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:11434/api/tags"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  # ── ChromaDB (vector store) ────────────────────────────────────────────────
+  chromadb:
+    image: chromadb/chroma:latest
+    container_name: chromadb
+    ports:
+      - "8001:8000"                 # external 8001 → internal 8000
+    volumes:
+      - chroma_data:/chroma/chroma
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/api/v2/heartbeat"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    restart: unless-stopped
+
+  # ── FastAPI backend ────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: backend
+    ports:
+      - "8000:8000"
+    environment:
+      OLLAMA_URL:   http://ollama:11434
+      CHROMA_HOST:  chromadb
+      CHROMA_PORT:  "8000"   # internal ChromaDB port (not the mapped 8001)
+      DATA_DIR:     /app/data
+    depends_on:
+      ollama:
+        condition: service_healthy
+      chromadb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 120s   # leave time for model download + ingestion
+    restart: unless-stopped
+
+  # ── Gradio UI ──────────────────────────────────────────────────────────────
+  gradio:
+    build:
+      context: .
+      dockerfile: Dockerfile.gradio
+    container_name: gradio
+    ports:
+      - "7860:7860"
+    environment:
+      BACKEND_URL: http://backend:8000
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+
+volumes:
+  ollama_data:
+  chroma_data:

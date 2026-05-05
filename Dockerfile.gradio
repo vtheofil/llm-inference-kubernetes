@@ -1,0 +1,25 @@
+# Dockerfile.gradio — Gradio chat UI
+#
+# Lightweight image that only needs gradio + httpx.
+# The UI calls the FastAPI backend; it does NOT load any ML models.
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Only the packages the UI needs (much smaller than the backend image)
+RUN pip install --no-cache-dir \
+    gradio==4.37.2 \
+    httpx==0.27.0
+
+COPY ui/gradio_app.py ./ui/
+
+EXPOSE 7860
+
+# BACKEND_URL is injected at runtime via docker-compose / K8s configmap
+ENV BACKEND_URL=http://backend:8000
+
+CMD ["python", "ui/gradio_app.py"]

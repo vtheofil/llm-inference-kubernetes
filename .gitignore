@@ -1,6 +1,27 @@
-node_modules/
-api/.env
-web/.env.local
-web/.next/
-*.log
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.env
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# ChromaDB local data (populated at runtime, not committed)
 chroma_db/
+
+# Sentence-transformers / HuggingFace model cache
+.cache/
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+.dockerignore
+.claude/

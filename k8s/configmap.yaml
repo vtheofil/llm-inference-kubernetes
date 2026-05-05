@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: travel-assistant-config
+  labels:
+    app: travel-assistant
+data:
+  # Ollama runs as a sidecar inside the backend pod, so localhost is correct
+  OLLAMA_URL: "http://localhost:11434"
+
+  # ChromaDB is a separate service in the cluster
+  CHROMA_HOST: "chromadb-service"
+  CHROMA_PORT: "8000"
+
+  # Data directory inside the backend container
+  DATA_DIR: "/app/data"
+
+  # Gradio connects to the backend via ClusterIP service
+  BACKEND_URL: "http://backend-service:8000"
