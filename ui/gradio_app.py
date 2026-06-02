@@ -138,4 +138,5 @@ if __name__ == "__main__":
         server_name="0.0.0.0",
         server_port=int(os.getenv("GRADIO_PORT", "7860")),
         share=False,
+        show_api=False,
     )
