@@ -9,7 +9,7 @@
 set -euo pipefail
 
 CHROMA_HOST="${CHROMA_HOST:-localhost}"
-CHROMA_PORT="${CHROMA_PORT:-8001}"
+CHROMA_PORT="${CHROMA_PORT:-8000}"
 OLLAMA_URL="${OLLAMA_URL:-http://localhost:11434}"
 
 echo "=== Travel Assistant Backend ==="
@@ -35,7 +35,7 @@ echo "Checking ChromaDB collection …"
 python -c "
 import chromadb, os, sys
 host = os.getenv('CHROMA_HOST', 'localhost')
-port = int(os.getenv('CHROMA_PORT', '8001'))
+port = int(os.getenv('CHROMA_PORT', '8000'))
 client = chromadb.HttpClient(host=host, port=port)
 try:
     col = client.get_collection('travel_docs')

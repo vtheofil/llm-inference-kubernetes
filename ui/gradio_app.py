@@ -30,19 +30,39 @@ def check_backend() -> str:
     return "🔴 Backend unreachable — start the FastAPI server first"
 
 
+def _format_history(history: list) -> list[dict]:
+    """
+    Convert Gradio history format → backend format.
+
+    Gradio ChatInterface passes history as a list of [user_msg, assistant_msg] pairs.
+    The backend expects: [{"user": "...", "assistant": "..."}, ...]
+    """
+    formatted = []
+    for turn in history:
+        if isinstance(turn, (list, tuple)) and len(turn) == 2:
+            formatted.append({"user": turn[0] or "", "assistant": turn[1] or ""})
+    return formatted
+
+
 def stream_chat(message: str, history: list) -> str:
     """
     Generator function called by Gradio ChatInterface.
     Streams tokens from POST /chat/stream and yields progressively
     accumulated text, which Gradio renders in real time.
+
+    Passes conversation history to the backend so retrieval and generation
+    are context-aware (history-aware RAG).
     """
     partial = ""
     try:
         with httpx.stream(
             "POST",
             STREAM_URL,
-            json={"message": message},
-            timeout=180.0,
+            json={
+                "message": message,
+                "history": _format_history(history),
+            },
+            timeout=300.0,   # Mistral on CPU can take up to 5 min
         ) as response:
             response.raise_for_status()
             for chunk in response.iter_text():
@@ -115,7 +135,7 @@ with gr.Blocks(
 
 if __name__ == "__main__":
     demo.launch(
-        server_name="127.0.0.1",
+        server_name="0.0.0.0",
         server_port=int(os.getenv("GRADIO_PORT", "7860")),
         share=False,
     )

@@ -2,7 +2,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: travel-assistant-config
-  namespace: vtheofil-priv
+  namespace: travel-assistant
   labels:
     app: travel-assistant
 data:

@@ -4,7 +4,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: chromadb-service
-  namespace: vtheofil-priv
+  namespace: travel-assistant
   labels:
     app: chromadb
 spec:
@@ -17,30 +17,34 @@ spec:
       targetPort: 8000
 
 ---
-# ── Backend (FastAPI) — ClusterIP (internal; HPA targets this deployment) ─────
+# ── Backend (FastAPI) — NodePort ──────────────────────────────────────────────
+# Exposed externally so Locust (running on the VM) can reach it directly.
+# Access: http://<minikube-ip>:30001
 apiVersion: v1
 kind: Service
 metadata:
   name: backend-service
-  namespace: vtheofil-priv
+  namespace: travel-assistant
   labels:
     app: backend
 spec:
-  type: ClusterIP
+  type: NodePort
   selector:
     app: backend
   ports:
     - name: http
       port: 8000
       targetPort: 8000
+      nodePort: 30001
 
 ---
-# ── Gradio UI — NodePort (accessible from browser via VM public IP) ────────────
+# ── Gradio UI — NodePort (browser access) ────────────────────────────────────
+# Access: http://<minikube-ip>:30000
 apiVersion: v1
 kind: Service
 metadata:
   name: gradio-service
-  namespace: vtheofil-priv
+  namespace: travel-assistant
   labels:
     app: gradio
 spec:
@@ -51,4 +55,4 @@ spec:
     - name: http
       port: 7860
       targetPort: 7860
-      nodePort: 30000   # access at http://<VM-IP>:30000
+      nodePort: 30000

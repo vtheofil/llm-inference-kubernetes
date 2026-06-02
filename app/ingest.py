@@ -17,10 +17,12 @@ from sentence_transformers import SentenceTransformer
 
 # ── Configuration (override via environment variables) ──────────────────────
 CHROMA_HOST = os.getenv("CHROMA_HOST", "localhost")
-CHROMA_PORT = int(os.getenv("CHROMA_PORT", "8001"))
+CHROMA_PORT = int(os.getenv("CHROMA_PORT", "8000"))
 DATA_DIR    = os.getenv("DATA_DIR", "./data")
 COLLECTION  = "travel_docs"
-EMBED_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"  # multilingual, ~420 MB
+# multilingual-e5-small: trained for retrieval, cross-lingual (Greek ↔ English),
+# requires "passage: " prefix on documents and "query: " prefix on queries (~470 MB)
+EMBED_MODEL = "intfloat/multilingual-e5-small"
 CHUNK_SIZE  = 500   # characters per chunk
 CHUNK_OVERLAP = 50  # overlap between consecutive chunks
 
@@ -91,10 +93,14 @@ def ingest(force: bool = False) -> None:
             documents.append(chunk)
             metadatas.append({"source": country, "chunk_index": i})
 
+    # E5 requires "passage: " prefix on documents for optimal retrieval quality.
+    # The matching "query: " prefix is applied in rag.py at query time.
+    passages = [f"passage: {doc}" for doc in documents]
+
     # Compute embeddings in one batch (faster than one-by-one)
-    print(f"Embedding {len(documents)} chunks (this may take a minute) …")
+    print(f"Embedding {len(passages)} chunks (this may take a minute) …")
     t0 = time.time()
-    vecs = embedder.encode(documents, show_progress_bar=True, batch_size=32)
+    vecs = embedder.encode(passages, show_progress_bar=True, batch_size=32)
     embeddings = vecs.tolist()
     print(f"  Embedding done in {time.time() - t0:.1f}s")
 

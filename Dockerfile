@@ -37,12 +37,29 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl \
 COPY --from=builder /usr/local/lib/python3.11 /usr/local/lib/python3.11
 COPY --from=builder /usr/local/bin           /usr/local/bin
 
+# Pin HuggingFace / sentence-transformers cache inside /app so the
+# non-root user can read it at runtime (no home-directory required).
+ENV HF_HOME=/app/.cache/huggingface
+ENV SENTENCE_TRANSFORMERS_HOME=/app/.cache/sentence_transformers
+
+# Pre-download the embedding model at build time (runs as root → no
+# permission issues).  Bakes the ~470 MB weights into the image so
+# startup is instant and the container never needs internet access.
+RUN python -c "\
+from sentence_transformers import SentenceTransformer; \
+SentenceTransformer('intfloat/multilingual-e5-small')"
+
 # Copy application code
 COPY app/    ./app/
 COPY data/   ./data/
 COPY entrypoint.sh ./
 
-RUN chmod +x entrypoint.sh
+# Non-root user (professor's pattern #12)
+RUN useradd --no-create-home --shell /bin/false appuser \
+    && chmod +x entrypoint.sh \
+    && chown -R appuser:appuser /app
+
+USER appuser
 
 EXPOSE 8000
 

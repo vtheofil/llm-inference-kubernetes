@@ -4,7 +4,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: chroma-pvc
-  namespace: vtheofil-priv
+  namespace: travel-assistant
 spec:
   accessModes: [ReadWriteOnce]
   resources:
@@ -15,7 +15,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: chromadb-deployment
-  namespace: vtheofil-priv
+  namespace: travel-assistant
   labels:
     app: chromadb
 spec:
@@ -65,11 +65,13 @@ spec:
 
 ---
 # ── Backend Deployment (FastAPI + Ollama sidecar) ────────────────────────────
+# NOTE: On Minikube (single node, 4 vCPU / 16 GB RAM) one backend pod fits
+# comfortably; the HPA allows up to 2 replicas to stay within node capacity.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: backend-deployment
-  namespace: vtheofil-priv
+  namespace: travel-assistant
   labels:
     app: backend
 spec:
@@ -82,11 +84,8 @@ spec:
       labels:
         app: backend
     spec:
-      # Give the pod extra time — Ollama needs to start and load the model
       terminationGracePeriodSeconds: 60
 
-      # Init container: waits for ChromaDB, then runs ingest.py once.
-      # The main containers start only after this completes successfully.
       initContainers:
         - name: ingest
           image: vtheofil1/ptyxiakh-backend:__VERSION__
@@ -115,7 +114,6 @@ spec:
         - name: backend
           image: vtheofil1/ptyxiakh-backend:__VERSION__
           imagePullPolicy: IfNotPresent
-          # Override ENTRYPOINT — init container already ran ingest
           command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
           ports:
             - containerPort: 8000
@@ -147,7 +145,6 @@ spec:
             failureThreshold: 10
 
         # ── Sidecar container: Ollama (Mistral 7B) ────────────────────────────
-        # Runs inside the same pod — backend reaches it via localhost:11434
         - name: ollama
           image: ollama/ollama:latest
           imagePullPolicy: IfNotPresent
@@ -180,7 +177,7 @@ spec:
 
       volumes:
         - name: ollama-models
-          emptyDir: {}   # replace with a PVC to persist model downloads
+          emptyDir: {}
 
 ---
 # ── Gradio Deployment ─────────────────────────────────────────────────────────
@@ -188,7 +185,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: gradio-deployment
-  namespace: vtheofil-priv
+  namespace: travel-assistant
   labels:
     app: gradio
 spec:

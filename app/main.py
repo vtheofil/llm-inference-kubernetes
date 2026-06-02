@@ -8,13 +8,15 @@ Endpoints:
   GET  /metrics       — basic request count and latency metrics
 """
 
+import os
 import time
 import logging
 from contextlib import asynccontextmanager
 
+import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
 
 from app.rag import generate_response, generate_response_stream, _get_embedder
@@ -58,8 +60,16 @@ app.add_middleware(
 
 # ── Request / Response models ────────────────────────────────────────────────
 
+class HistoryTurn(BaseModel):
+    """One turn of conversation history (user message + assistant reply)."""
+    user: str
+    assistant: str = ""
+
 class ChatRequest(BaseModel):
     message: str
+    # Optional chat history for context-aware retrieval and generation.
+    # Each entry is a previous turn: {"user": "...", "assistant": "..."}.
+    history: list[HistoryTurn] = []
 
 class ChatResponse(BaseModel):
     response: str
@@ -70,8 +80,52 @@ class ChatResponse(BaseModel):
 
 @app.get("/health", tags=["ops"])
 def health():
-    """Kubernetes liveness and readiness probe."""
+    """Legacy health endpoint (kept for backwards-compat). Use /healthz or /readyz."""
     return {"status": "ok"}
+
+
+@app.get("/healthz", tags=["ops"])
+def healthz():
+    """
+    Kubernetes liveness probe.
+    Returns 200 immediately — just confirms the process is alive.
+    Does NOT check dependencies (ChromaDB / Ollama).
+    """
+    return {"status": "ok"}
+
+
+@app.get("/readyz", tags=["ops"])
+def readyz():
+    """
+    Kubernetes readiness probe.
+    Checks that both ChromaDB and Ollama are reachable before the pod
+    is allowed to receive traffic.  Returns 503 if either dependency is down.
+    """
+    errors = []
+
+    # ── Check ChromaDB ───────────────────────────────────────────────────────
+    chroma_host = os.getenv("CHROMA_HOST", "localhost")
+    chroma_port = os.getenv("CHROMA_PORT", "8000")
+    try:
+        r = httpx.get(f"http://{chroma_host}:{chroma_port}/api/v2/heartbeat", timeout=3.0)
+        r.raise_for_status()
+    except Exception as exc:
+        errors.append(f"chromadb: {exc}")
+
+    # ── Check Ollama ─────────────────────────────────────────────────────────
+    ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434")
+    try:
+        r = httpx.get(f"{ollama_url}/api/tags", timeout=3.0)
+        r.raise_for_status()
+    except Exception as exc:
+        errors.append(f"ollama: {exc}")
+
+    if errors:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "not ready", "errors": errors},
+        )
+    return {"status": "ready"}
 
 
 @app.get("/metrics", tags=["ops"])
@@ -99,7 +153,8 @@ def chat(req: ChatRequest):
     _metrics["total_requests"] += 1
     t0 = time.time()
     try:
-        response = generate_response(req.message)
+        history = [h.model_dump() for h in req.history]
+        response = generate_response(req.message, history)
         latency  = (time.time() - t0) * 1000
         _metrics["total_latency_ms"] += latency
         logger.info("Chat OK — %.0f ms", latency)
@@ -118,10 +173,11 @@ def chat_stream(req: ChatRequest):
     The Gradio UI connects here to display a live typing effect.
     """
     _metrics["total_requests"] += 1
+    history = [h.model_dump() for h in req.history]
 
     def _generator():
         try:
-            for token in generate_response_stream(req.message):
+            for token in generate_response_stream(req.message, history):
                 yield token
         except Exception as exc:
             _metrics["errors"] += 1
