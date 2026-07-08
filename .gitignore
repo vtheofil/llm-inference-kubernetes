@@ -53,7 +53,7 @@ desktop.ini
 # intermediate scripts, node_modules, review folders)
 thesis/*
 !thesis/Theofilogiannakos_Vasileios_Thesis_v1.1_FINAL.pdf
-!thesis/Parousiasi_Theofilogiannakos.pptx
+!thesis/Theofilogiannakos_Vasileios_Thesis_Presentation.pptx
 
 # ── Personal notes / random files ──────────────────────────────────
 dit_study_guide_raw.txt
