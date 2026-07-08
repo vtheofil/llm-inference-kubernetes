@@ -1,0 +1,61 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: locust-deployment
+  namespace: vtheofil-priv
+  labels:
+    app: locust
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: locust
+  template:
+    metadata:
+      labels:
+        app: locust
+    spec:
+      containers:
+        - name: locust
+          image: locustio/locust:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - locust
+          args:
+            - "-f"
+            - "/mnt/locust/locustfile.py"
+            - "--host"
+            - "http://backend-service:8000"
+          ports:
+            - containerPort: 8089
+          volumeMounts:
+            - name: locustfile-volume
+              mountPath: /mnt/locust
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "256Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+      volumes:
+        - name: locustfile-volume
+          configMap:
+            name: locustfile-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: locust-service
+  namespace: vtheofil-priv
+  labels:
+    app: locust
+spec:
+  type: NodePort
+  selector:
+    app: locust
+  ports:
+    - name: web
+      port: 8089
+      targetPort: 8089
+      nodePort: 30089

@@ -1,59 +1,55 @@
-version: "3.9"
-
-# ── Travel Assistant — local development stack ────────────────────────────────
-#
-# Services:
-#   ollama    — local LLM server (Mistral 7B must already be pulled)
-#   chromadb  — vector store
-#   backend   — FastAPI + RAG pipeline
-#   gradio    — Chat UI
+# ── Atlas Systems Knowledge Assistant — local development stack ──────────────
 #
 # Quick start:
 #   docker compose up --build
 #
-# Pull Mistral first (one-time):
-#   docker compose run --rm ollama ollama pull mistral
+# One-time model pull:
+#   docker compose run --rm ollama ollama pull phi3:mini
 
 services:
 
-  # ── Ollama (Mistral 7B) ────────────────────────────────────────────────────
+  # ── Ollama ────────────────────────────────────────────────────────────────
   ollama:
     image: ollama/ollama:latest
     container_name: ollama
     ports:
       - "11434:11434"
     volumes:
-      - ollama_data:/root/.ollama   # persist downloaded models
+      - ollama_data:/root/.ollama
     deploy:
       resources:
         limits:
           memory: 8g
           cpus: "2.0"
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:11434/api/tags"]
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1"]
       interval: 10s
       timeout: 5s
       retries: 10
       start_period: 30s
     restart: unless-stopped
 
-  # ── ChromaDB (vector store) ────────────────────────────────────────────────
+  # ── ChromaDB ──────────────────────────────────────────────────────────────
   chromadb:
     image: chromadb/chroma:latest
     container_name: chromadb
     ports:
-      - "8001:8000"                 # external 8001 → internal 8000
+      - "8001:8000"
     volumes:
-      - chroma_data:/chroma/chroma
+      - chroma_data:/data
+    environment:
+      IS_PERSISTENT: "TRUE"
+      PERSIST_DIRECTORY: /data
+      ANONYMIZED_TELEMETRY: "FALSE"
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8000/api/v2/heartbeat"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v2/heartbeat')\""]
       interval: 10s
       timeout: 5s
-      retries: 10
-      start_period: 15s
+      retries: 15
+      start_period: 45s
     restart: unless-stopped
 
-  # ── FastAPI backend ────────────────────────────────────────────────────────
+  # ── FastAPI backend ───────────────────────────────────────────────────────
   backend:
     build:
       context: .
@@ -62,24 +58,27 @@ services:
     ports:
       - "8000:8000"
     environment:
-      OLLAMA_URL:   http://ollama:11434
-      CHROMA_HOST:  chromadb
-      CHROMA_PORT:  "8000"   # internal ChromaDB port (not the mapped 8001)
-      DATA_DIR:     /app/data
+      OLLAMA_URL: http://ollama:11434
+      CHROMA_HOST: chromadb
+      CHROMA_PORT: "8000"
+      DATA_DIR: /app/data
+      COLLECTION: enterprise_docs
+      LLM_MODEL: phi3:mini
+      TOP_K: "5"
     depends_on:
       ollama:
         condition: service_healthy
       chromadb:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8000/health"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || curl -sf http://localhost:8000/healthz"]
       interval: 15s
       timeout: 5s
       retries: 8
-      start_period: 120s   # leave time for model download + ingestion
+      start_period: 120s
     restart: unless-stopped
 
-  # ── Gradio UI ──────────────────────────────────────────────────────────────
+  # ── Gradio UI ─────────────────────────────────────────────────────────────
   gradio:
     build:
       context: .
@@ -93,7 +92,6 @@ services:
       backend:
         condition: service_healthy
     restart: unless-stopped
-
 
 volumes:
   ollama_data:

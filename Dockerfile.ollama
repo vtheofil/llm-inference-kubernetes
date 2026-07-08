@@ -1,0 +1,48 @@
+# Dockerfile.ollama — Pre-baked Ollama image with phi3:mini included
+#
+# WHY THIS EXISTS
+# ---------------
+# The default ollama/ollama:latest image is small (~200 MB) but each new
+# pod must download phi3:mini (~2.3 GB) at startup via a postStart hook.
+# Under HPA scale-up, that introduces a 2-3 minute cold-start penalty
+# per new pod, partially defeating the elasticity demonstration.
+#
+# By baking the model into the image at build time:
+#   • The image grows to ~5 GB
+#   • Once pulled to a node (or pre-warmed via the preload DaemonSet),
+#     every subsequent pod on that node starts in ~10 seconds with the
+#     model already on disk
+#   • No runtime `ollama pull` step is required
+#
+# Combined with the dummy-inference readiness probe in deployment.yaml,
+# the model is loaded into RAM before the pod is admitted to traffic,
+# eliminating the first-inference cold-start penalty as well.
+#
+# BUILD
+#   docker build -f Dockerfile.ollama -t vtheofil1/ptyxiakh-ollama:v1.0.3 .
+#
+# RUN (smoke test locally)
+#   docker run --rm -p 11434:11434 vtheofil1/ptyxiakh-ollama:v1.0.3
+
+FROM ollama/ollama:latest
+
+# Pre-bake phi3:mini (the baseline model used in production). For the
+# phi3-vs-mistral comparison study, mistral lives in a SEPARATE image
+# (vtheofil1/ptyxiakh-ollama:v1.0.2 — the legacy Travel-RAG build,
+# reused as-is to avoid a 5 GB rebuild + push cycle on the slow
+# development laptop network). Both images are pre-warmed on every
+# node via the preload DaemonSet so model switching at runtime is
+# a near-instant operation.
+#
+# Approximate size (Q4_K_M quantization):
+#   phi3:mini  ~2.3 GB
+#   Image with base layers: ~5 GB
+RUN (ollama serve &) && \
+    sleep 5 && \
+    until ollama list >/dev/null 2>&1; do sleep 1; done && \
+    ollama pull phi3:mini && \
+    pkill -f "ollama serve" || true && \
+    sleep 2
+
+# The base image already sets ENTRYPOINT ["/bin/ollama"] and CMD ["serve"];
+# we inherit both so the container starts the daemon by default.

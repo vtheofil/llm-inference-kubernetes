@@ -1,0 +1,94 @@
+---
+# ── Kaniko Job: build pre-baked Ollama+mistral image inside the cluster ──────
+#
+# WHY THIS EXISTS
+# ---------------
+# The development laptop has slow access to registry.ollama.ai and Docker Hub
+# (~80 KB/s observed). Pulling the 4.4 GB mistral model + pushing the
+# resulting ~7 GB image would take >10 hours from the laptop, which is
+# impractical within the thesis timeline.
+#
+# This Job uses Kaniko (a userspace image builder by Google) to perform the
+# entire build inside the vdcloud cluster, where the network bandwidth is
+# orders of magnitude higher. End-to-end build + push completes in ~15-30 min.
+#
+# WHAT IT DOES
+# ------------
+# 1. Reads the Dockerfile content from the `mistral-dockerfile` ConfigMap.
+# 2. Pulls the ollama/ollama:latest base image (fast).
+# 3. Inside that base, starts ollama temporarily, pulls mistral (~4.4 GB),
+#    shuts ollama down.
+# 4. Commits the resulting filesystem as a new Docker image.
+# 5. Authenticates against Docker Hub using the dockerhub-creds Secret.
+# 6. Pushes the new image to vtheofil1/ptyxiakh-ollama-mistral:v1.0.0.
+#
+# After this Job succeeds, the rest of the pipeline (DaemonSet pre-warm,
+# Deployment image switch) proceeds exactly as for the phi3 baseline —
+# apples-to-apples cold-start characteristics for the comparison study.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mistral-dockerfile
+  namespace: vtheofil-priv
+data:
+  Dockerfile: |
+    FROM ollama/ollama:latest
+
+    # Pre-bake the mistral model. The (ollama serve &) trick starts the
+    # daemon in the background long enough to accept a `pull` command,
+    # after which we shut it down so the resulting layer captures only
+    # the model files (not a running process).
+    RUN (ollama serve &) && \
+        sleep 5 && \
+        until ollama list >/dev/null 2>&1; do sleep 1; done && \
+        ollama pull mistral && \
+        pkill -f "ollama serve" || true && \
+        sleep 2
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: build-mistral-image
+  namespace: vtheofil-priv
+spec:
+  # Auto-cleanup the Job pod 1 hour after it finishes.
+  ttlSecondsAfterFinished: 3600
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        app: kaniko-build
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: kaniko
+          image: gcr.io/kaniko-project/executor:latest
+          args:
+            - "--dockerfile=Dockerfile"
+            - "--context=dir:///workspace"
+            - "--destination=vtheofil1/ptyxiakh-ollama-mistral:v1.0.0"
+            - "--cache=false"
+            - "--verbosity=info"
+          volumeMounts:
+            - name: dockerfile
+              mountPath: /workspace
+            - name: docker-config
+              mountPath: /kaniko/.docker
+          resources:
+            requests:
+              cpu: "1"
+              memory: "4Gi"
+            limits:
+              cpu: "4"
+              memory: "12Gi"
+      volumes:
+        - name: dockerfile
+          configMap:
+            name: mistral-dockerfile
+        - name: docker-config
+          secret:
+            secretName: dockerhub-creds
+            items:
+              - key: .dockerconfigjson
+                path: config.json

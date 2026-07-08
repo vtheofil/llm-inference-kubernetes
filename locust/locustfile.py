@@ -6,21 +6,17 @@ Usage (from the project root):
   pip install locust
 
   # Run with web UI (open http://localhost:8089 in browser)
-  locust -f locust/locustfile.py --host http://<BACKEND_HOST>:8000
+  locust -f locust/locustfile.py --host http://localhost:8000
 
   # Run headless (10 users, ramp 1/s, 2-minute run)
-  locust -f locust/locustfile.py --host http://<BACKEND_HOST>:8000 \
+  locust -f locust/locustfile.py --host http://localhost:8000 \
          --headless -u 10 -r 1 -t 120s \
          --csv=results/load_test
-
-  # Minikube example (NodePort 30001)
-  locust -f locust/locustfile.py --host http://$(minikube ip):30001 \
-         --headless -u 20 -r 2 -t 180s --csv=results/minikube
 
   # vdcloud example (kubectl port-forward in another terminal first)
   #   kubectl port-forward -n vtheofil-priv svc/backend-service 8000:8000
   locust -f locust/locustfile.py --host http://localhost:8000 \
-         --headless -u 20 -r 2 -t 180s --csv=results/vdcloud
+         --headless -u 15 -r 2 -t 10m --csv=results/vdcloud
 
 Metrics collected:
   - Request latency (min / avg / median / p95 / max)
@@ -28,32 +24,37 @@ Metrics collected:
   - Error rate (% failures)
   - Concurrent user behaviour under increasing load
 
-The high latency from Mistral 7B (CPU-only) is intentional — it keeps CPU
+The high latency from phi3:mini (CPU-only) is intentional — it keeps CPU
 utilisation high long enough for the HPA to trigger a scale-out event.
+
+Important: all queries are English-only because the production prompt
+enforces an "English-only response" rule (the corpus is English; smaller
+models mix languages otherwise). Each query also mentions a destination
+so the pre-LLM `_detect_destination` guard routes to retrieval + the LLM
+rather than short-circuiting to the canned clarification reply — that
+short-circuit returns in ~10 ms and would NOT push CPU above HPA's 70%
+threshold, defeating the autoscaling demo.
 """
 
 import random
 from locust import HttpUser, task, between, events
 
-# ── Travel queries sent to POST /chat ─────────────────────────────────────────
-# Realistic prompts covering all five supported destinations.
-TRAVEL_QUERIES = [
-    "Θέλω να πάω Ρώμη 5 μέρες με 700€. Φτιάξε μου αναλυτικό πρόγραμμα.",
-    "Ταξίδι στο Τόκιο 7 μέρες με budget 1500€. Τι προτείνεις;",
-    "Παρίσι 3 μέρες με 500€. Ποια αξιοθέατα να δω και πόσο κοστίζουν;",
-    "Barcelona 4 days with €600 budget. Give me a detailed itinerary.",
-    "Θέλω Σαντορίνη και Αθήνα 6 μέρες με 900€. Πώς να οργανωθώ;",
-    "Japan 10 days, budget 2000€. Best cities and daily schedule please.",
-    "Rome 3 days with 400€, solo traveler. Budget accommodation tips?",
-    "Ελλάδα 5 μέρες με 600€. Ποιες πόλεις να επισκεφτώ;",
-    "France 7 days 1200€. Paris plus one region outside Paris.",
-    "Spain 5 days 800€. Madrid and Barcelona, how to split the time?",
-    "Ιαπωνία 14 μέρες με 3000€. Αναλυτικό ταξιδιωτικό πλάνο παρακαλώ.",
-    "Italy 6 days 900€. Rome, Florence, Venice — is it doable?",
+# ── ENTERPRISE_QUERIES sent to POST /chat ─────────────────────────────────────────
+# 
+ENTERPRISE_QUERIES = [
+    "Who manages Project Atlas?",
+    "What is the budget of Project Atlas?",
+    "Who is the tech lead of Project Atlas?",
+    "Who leads the Engineering department?",
+    "Which employees work on Project Atlas?",
+    "What is the status of Project Atlas?",
+    "How can an employee reset their VPN password?",
+    "What is the annual leave policy?",
+    "What are the Engineering priorities for March 2026?",
 ]
 
 
-class TravelUser(HttpUser):
+class EnterpriseUser(HttpUser):
     """
     Simulates a user querying the Travel Assistant.
 
@@ -64,15 +65,24 @@ class TravelUser(HttpUser):
 
     wait_time = between(1, 5)
 
+    # Force a new TCP connection on every request so kube-proxy's random L4
+    # selection re-rolls the pod for each call. Without this, every Locust
+    # worker reuses the same persistent HTTP/1.1 connection and therefore
+    # the same backend pod for its entire lifetime — defeating the
+    # autoscaling demo (we observed this: 15 workers all stuck on one
+    # pod while two other pods sat idle).
+    _NO_KEEPALIVE = {"Connection": "close"}
+
     @task(10)
     def chat_blocking(self):
         """POST /chat — blocking response (primary load generator)."""
-        query = random.choice(TRAVEL_QUERIES)
+        query = random.choice(ENTERPRISE_QUERIES)
         with self.client.post(
             "/chat",
             json={"message": query},
+            headers=self._NO_KEEPALIVE,
             catch_response=True,
-            timeout=300,   # Mistral on CPU can take up to 5 min
+            timeout=300,   # phi3 on CPU is much faster but cold pods need headroom
         ) as response:
             if response.status_code == 200:
                 data = response.json()
@@ -85,8 +95,13 @@ class TravelUser(HttpUser):
 
     @task(3)
     def health_check(self):
-        """GET /health — lightweight probe, verifies pod is alive."""
-        with self.client.get("/health", catch_response=True, timeout=5) as response:
+        """GET /healthz — lightweight probe, verifies pod is alive."""
+        with self.client.get(
+            "/healthz",
+            headers=self._NO_KEEPALIVE,
+            catch_response=True,
+            timeout=5,
+        ) as response:
             if response.status_code == 200:
                 response.success()
             else:
@@ -95,7 +110,12 @@ class TravelUser(HttpUser):
     @task(1)
     def metrics_check(self):
         """GET /metrics — reads latency counters exposed by the backend."""
-        with self.client.get("/metrics", catch_response=True, timeout=5) as response:
+        with self.client.get(
+            "/metrics",
+            headers=self._NO_KEEPALIVE,
+            catch_response=True,
+            timeout=6,
+        ) as response:
             if response.status_code == 200:
                 response.success()
             else:
@@ -116,7 +136,7 @@ def on_request(request_type, name, response_time, response_length, exception, **
 @events.test_start.add_listener
 def on_test_start(environment, **kwargs):
     print("=" * 60)
-    print("Travel Assistant — Load Test Started")
+    print("Atlas Systems — Load Test Started")
     print(f"Target host : {environment.host}")
     print("Endpoints   : POST /chat (x10), GET /health (x3), GET /metrics (x1)")
     print("=" * 60)

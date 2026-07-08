@@ -1,0 +1,28 @@
+# Dockerfile.ollama.mistral — Pre-baked Ollama image with mistral ONLY
+#
+# Companion to Dockerfile.ollama (phi3-only).
+# Built as a separate image to keep each ~4-5 GB instead of one ~8 GB
+# dual-model image. This reduces build time, push time (DockerHub
+# bandwidth), pull time (DaemonSet pre-warm on each node), and the
+# local disk space required during the build.
+#
+# Usage in the cluster:
+#   - For phi3 baseline → deployment.yaml uses vtheofil1/ptyxiakh-ollama:v1.0.3
+#   - For mistral test  → deployment.yaml uses vtheofil1/ptyxiakh-ollama-mistral:v1.0.0
+#   - Switching = sed the image tag + LLM_MODEL constant in app/rag.py +
+#                 rebuild backend.
+#
+# BUILD
+#   docker build -f Dockerfile.ollama.mistral -t vtheofil1/ptyxiakh-ollama-mistral:v1.0.0 .
+
+FROM ollama/ollama:latest
+
+# Pre-bake mistral only. ~4.4 GB Q4_K_M quantization.
+RUN (ollama serve &) && \
+    sleep 5 && \
+    until ollama list >/dev/null 2>&1; do sleep 1; done && \
+    ollama pull mistral && \
+    pkill -f "ollama serve" || true && \
+    sleep 2
+
+# Inherit ENTRYPOINT and CMD from base image.

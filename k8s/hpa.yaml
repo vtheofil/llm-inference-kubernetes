@@ -8,6 +8,11 @@ spec:
     apiVersion: apps/v1
     kind: Deployment
     name: backend-deployment
+  # minReplicas: 1 — start from a single pod so the HPA scale-up behaviour
+  # is observable in the demo (1 → N pods under load). The Atlas workload
+  # is light enough (factual extraction, ~3-5s median) that a single pod
+  # handles low-concurrency demo traffic without backlogging, and HPA
+  # scales up under sustained or burst load.
   minReplicas: 1
   maxReplicas: 5
   metrics:

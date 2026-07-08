@@ -10,10 +10,40 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Only the packages the UI needs (much smaller than the backend image)
+# Only the packages the UI needs (much smaller than the backend image).
+#
+# Pin matrix — required for gradio 4.44.1 to actually run stably:
+#
+# • gradio_client==1.3.0 — gradio 4.44.1 auto-installs gradio_client 1.4.x
+#   which crashes during API schema generation:
+#     TypeError: argument of type 'bool' is not iterable
+#     (gradio_client/utils.py:863 → "if 'const' in schema:")
+#   The v1.3.0 client still uses dict-only schemas and is binary-compatible
+#   with the gradio 4.44.1 server. (Combined with the monkey-patch in
+#   gradio_app.py for additional safety.)
+#
+# • fastapi==0.115.0 + starlette==0.38.6 + jinja2==3.1.4 + markupsafe<3
+#   The latest fastapi/starlette that pip resolves for gradio 4.44.1 emit
+#   a dict (instead of a tuple) as the jinja2 TemplateResponse cache_key,
+#   which then crashes every request with:
+#     TypeError: unhashable type: 'dict'
+#   (jinja2/utils.py:515 → self._mapping[key])
+#   These specific pins are the last set known to work with gradio 4.44.1.
+#
+# • huggingface_hub<0.26 — newer versions removed HfFolder which
+#   gradio 4.44.1 still imports in its oauth module.
+#
+# • pydantic==2.9.2 — known-stable with the above fastapi pin.
 RUN pip install --no-cache-dir \
     gradio==4.44.1 \
-    httpx==0.27.0
+    gradio_client==1.3.0 \
+    fastapi==0.115.0 \
+    starlette==0.38.6 \
+    pydantic==2.9.2 \
+    jinja2==3.1.4 \
+    "markupsafe<3" \
+    httpx==0.27.0 \
+    "huggingface_hub<0.26"
 
 # Non-root user
 RUN useradd --no-create-home --shell /bin/false appuser

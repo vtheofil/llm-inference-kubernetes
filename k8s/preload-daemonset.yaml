@@ -1,0 +1,101 @@
+---
+# ── Ollama image preloader DaemonSet (dual-model, apples-to-apples) ──────────
+#
+# WHY THIS EXISTS
+# ---------------
+# When the HPA spins up a new backend pod, the kubelet on the target node
+# must first pull the container image before the pod can start. For our
+# pre-baked Ollama images (~5-8 GB each), that initial pull takes 1-2
+# minutes from Docker Hub and dominates the scale-up latency on any node
+# that hasn't seen the image yet.
+#
+# This DaemonSet schedules exactly one pod per node containing two
+# sidecar "pause" containers — one per model image. Each container does
+# nothing but sleep, but kubelet pulls and retains the image as long as
+# the container reference exists.
+#
+# MULTI-MODEL DESIGN (apples-to-apples)
+# -------------------------------------
+# For the phi3-vs-mistral comparison study, both model images need
+# identical cold-start characteristics — i.e. both pre-baked and
+# pre-warmed on every node. Switching between models (via the `image:`
+# field on the backend Deployment) is then an instant operation with
+# no registry-pull penalty, ensuring the only variable in the
+# comparison is the LLM itself.
+#
+# Images pre-warmed:
+#   • vtheofil1/ptyxiakh-ollama:v1.0.3              (phi3:mini, ~5 GB)
+#   • vtheofil1/ptyxiakh-ollama-mistral:v1.0.0      (mistral 7B, ~7 GB)
+#
+# The mistral image was built inside the cluster via a Kaniko Job
+# (see k8s/kaniko-build-mistral.yaml) because the development laptop's
+# upstream bandwidth (~80 KB/s observed) made a local build + push
+# impractical.
+#
+# Resource footprint: ~20 mCPU and ~20 MiB per node — negligible.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: ollama-image-preloader
+  namespace: vtheofil-priv
+  labels:
+    app: ollama-preloader
+spec:
+  selector:
+    matchLabels:
+      app: ollama-preloader
+  # Parallel rollout — replace all pods at once instead of one-by-one.
+  # Default maxUnavailable=1 would mean each of the 20 nodes pulls a
+  # ~5 GB image sequentially (~10 min × 20 = >3 hours). Setting it to
+  # 100% lets every node pull in parallel, so the rollout completes
+  # in roughly the time of the slowest single node (~10-15 min).
+  # This pod's only job is to keep an image cached — there's no
+  # availability concern from having all replicas restart at once.
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 100%
+  template:
+    metadata:
+      labels:
+        app: ollama-preloader
+    spec:
+      # Tolerate the standard NoSchedule taints so the preloader runs on
+      # control-plane / specialized nodes too (where backend pods may also
+      # land if cluster scheduling permits).
+      tolerations:
+        - operator: "Exists"
+          effect: "NoSchedule"
+      # Authenticated DockerHub pulls — required because 20 cluster nodes
+      # share an outbound NAT IP and quickly exhaust the 100-pulls/6h
+      # anonymous rate limit (a fresh DaemonSet rollout silently stalls
+      # in ContainerCreating once the quota is hit). Authenticated pulls
+      # against the personal account bypass that limit. The credential
+      # is stored in the `dockerhub-creds` Secret (kubernetes.io/dockerconfigjson).
+      imagePullSecrets:
+        - name: dockerhub-creds
+      containers:
+        # Pre-warm the phi3:mini image (baseline / default model).
+        - name: pause-phi3
+          image: vtheofil1/ptyxiakh-ollama:__OLLAMA_VERSION__
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c", "echo 'phi3 image cached on node'; sleep infinity"]
+          resources:
+            requests:
+              cpu: "10m"
+              memory: "10Mi"
+            limits:
+              cpu: "50m"
+              memory: "50Mi"
+        # Pre-warm the mistral image (comparison candidate).
+        - name: pause-mistral
+          image: vtheofil1/ptyxiakh-ollama-mistral:__MISTRAL_VERSION__
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c", "echo 'mistral image cached on node'; sleep infinity"]
+          resources:
+            requests:
+              cpu: "10m"
+              memory: "10Mi"
+            limits:
+              cpu: "50m"
+              memory: "50Mi"

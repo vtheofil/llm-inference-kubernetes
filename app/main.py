@@ -1,10 +1,11 @@
 """
-main.py — FastAPI backend for the Travel Assistant.
+main.py — FastAPI backend for the Atlas Systems Knowledge Assistant.
 
 Endpoints:
   POST /chat          — blocking chat; returns full response
   POST /chat/stream   — streaming chat; returns text/plain stream
-  GET  /health        — Kubernetes liveness/readiness probe
+  GET  /healthz       — Kubernetes liveness probe
+  GET  /readyz        — Kubernetes readiness probe (checks ChromaDB + Ollama)
   GET  /metrics       — basic request count and latency metrics
 """
 
@@ -19,7 +20,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
 
-from app.rag import generate_response, generate_response_stream, _get_embedder
+from app.rag import (
+    generate_response,
+    generate_response_stream,
+    retrieve_with_sources,
+    _get_embedder,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -38,15 +44,15 @@ async def lifespan(app: FastAPI):
     logger.info("Pre-loading embedding model …")
     import asyncio
     await asyncio.get_event_loop().run_in_executor(None, _get_embedder)
-    logger.info("Travel Assistant API ready.")
+    logger.info("Atlas Systems Knowledge Assistant API ready.")
     yield
-    logger.info("Travel Assistant API shut down.")
+    logger.info("Atlas Systems Knowledge Assistant API shut down.")
 
 
 app = FastAPI(
-    title="Travel Assistant API",
-    description="RAG-powered travel planning with Ollama + Mistral 7B",
-    version="1.0.0",
+    title="Atlas Systems Knowledge Assistant API",
+    description="RAG-powered enterprise knowledge assistant with Ollama (phi3:mini) + ChromaDB",
+    version="2.0.3",
     lifespan=lifespan,
 )
 
@@ -71,9 +77,28 @@ class ChatRequest(BaseModel):
     # Each entry is a previous turn: {"user": "...", "assistant": "..."}.
     history: list[HistoryTurn] = []
 
+class SourceRecord(BaseModel):
+    """One retrieved chunk, surfaced to the UI for the 'Show Sources' panel.
+
+    Schema matches the metadata produced by the Atlas Systems ingest
+    pipeline (app/ingest.py) and surfaced by the retrieval layer
+    (app/rag.py:retrieve_with_sources).
+    """
+    citation:    str   # e.g. "Employee / Maria Voulgari"
+    type:        str = ""   # employee, project, policy, faq, meeting, ...
+    title:       str = ""
+    name:        str = ""   # employee name, project name, etc.
+    department:  str = ""
+    project:     str = ""
+    source_path: str = ""
+    distance:    float | None = None   # cosine distance from query (lower = closer)
+    snippet:     str = ""
+
+
 class ChatResponse(BaseModel):
-    response: str
-    latency_ms: float
+    response:    str
+    latency_ms:  float
+    sources:     list[SourceRecord] = []
 
 
 # ── Endpoints ────────────────────────────────────────────────────────────────
@@ -148,20 +173,51 @@ def chat(req: ChatRequest):
     """
     Blocking chat endpoint.
     Retrieves relevant context from ChromaDB and generates a full response
-    from Ollama Mistral 7B before returning.
+    via Ollama (phi3:mini) before returning, along with the source chunks
+    that were used (so the UI can render a 'Show Sources' panel without
+    re-running retrieval).
     """
     _metrics["total_requests"] += 1
     t0 = time.time()
     try:
         history = [h.model_dump() for h in req.history]
-        response = generate_response(req.message, history)
-        latency  = (time.time() - t0) * 1000
+        # DEBUG (v2.0.5): log incoming message + history length so we can
+        # diagnose whether the Gradio UI is actually forwarding the previous
+        # turns. Required because the follow-up retrieval anchor only fires
+        # when the backend receives a non-empty history.
+        logger.info("Chat IN  — message=%r — history_turns=%d",
+                    (req.message or "")[:120], len(history))
+        result  = generate_response(req.message, history)
+        latency = (time.time() - t0) * 1000
         _metrics["total_latency_ms"] += latency
-        logger.info("Chat OK — %.0f ms", latency)
-        return ChatResponse(response=response, latency_ms=round(latency, 1))
+        logger.info("Chat OK — %.0f ms — %d sources", latency, len(result["sources"]))
+        return ChatResponse(
+            response=result["response"],
+            latency_ms=round(latency, 1),
+            sources=[SourceRecord(**s) for s in result["sources"]],
+        )
     except Exception as exc:
         _metrics["errors"] += 1
         logger.error("Chat error: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/sources", response_model=list[SourceRecord], tags=["chat"])
+def sources(req: ChatRequest):
+    """
+    Retrieval-only endpoint: runs the same context-aware similarity search
+    as `/chat` and returns just the top-K sources (no LLM generation).
+
+    Used by the Gradio UI's 'Show Sources' button: the streaming endpoint
+    returns raw tokens for the live typing effect, then the UI calls this
+    endpoint separately to display the citations panel.
+    """
+    try:
+        history     = [h.model_dump() for h in req.history]
+        _, src_list = retrieve_with_sources(req.message, history)
+        return [SourceRecord(**s) for s in src_list]
+    except Exception as exc:
+        logger.error("Sources error: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))
 
 

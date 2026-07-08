@@ -1,10 +1,10 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: travel-assistant-config
+  name: atlas-systems-config
   namespace: vtheofil-priv
   labels:
-    app: travel-assistant
+    app: atlas-systems
 data:
   # Ollama runs as a sidecar inside the backend pod, so localhost is correct
   OLLAMA_URL: "http://localhost:11434"

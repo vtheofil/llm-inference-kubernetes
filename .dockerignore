@@ -1,0 +1,52 @@
+# .dockerignore — keep Docker build context lean
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+
+# Virtual environments / conda envs
+.venv/
+venv/
+env/
+.conda/
+
+# Local IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Git
+.git/
+.gitignore
+
+# Local ChromaDB data (never bake into image)
+chroma_data/
+chromadb/
+
+# Sentence-transformers model cache
+.cache/
+models/
+
+# Locust / test files (not needed in container)
+locust/
+tests/
+
+# Kubernetes manifests (not needed in container)
+k8s/
+k8s-minikube/
+
+# Docs / notebooks
+*.md
+*.ipynb
+docs/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment files with secrets
+.env
+*.env

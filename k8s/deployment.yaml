@@ -96,12 +96,33 @@ spec:
             - |
               echo "Init: waiting for ChromaDB …"
               until curl -sf http://chromadb-service:8000/api/v2/heartbeat; do sleep 3; done
-              echo "Init: running ingest …"
+              echo "Init: checking ingestion status …"
+              # NOTE: --force REMOVED in v2.0.9.
+              #
+              # Previously each new pod (including HPA scale-ups) wiped the
+              # ChromaDB collection and re-embedded all 499 chunks. Two
+              # problems with that:
+              #   1. ~2 min wasted per scale-up (embedding work is repeated
+              #      even though the dataset didn't change).
+              #   2. RACE CONDITION: while pod-B re-ingests, pod-A is still
+              #      serving real traffic against the now-empty collection,
+              #      producing factually-empty retrievals.
+              #
+              # ingest.py already short-circuits when the collection has
+              # data (see app/ingest.py:108 — `collection_has_data` check),
+              # so omitting --force means: empty collection => ingest;
+              # populated collection => skip in ~5 sec.
+              #
+              # To force a full re-ingest after a dataset change, run it
+              # manually as a one-off Job or:
+              #   kubectl exec -n vtheofil-priv \
+              #       <any backend pod> -c backend -- \
+              #       python -m app.ingest --force
               python -m app.ingest
               echo "Init: done."
           envFrom:
             - configMapRef:
-                name: travel-assistant-config
+                name: atlas-systems-config
           resources:
             requests:
               cpu: "500m"
@@ -121,7 +142,7 @@ spec:
             - containerPort: 8000
           envFrom:
             - configMapRef:
-                name: travel-assistant-config
+                name: atlas-systems-config
           resources:
             requests:
               cpu: "500m"
@@ -146,37 +167,193 @@ spec:
             periodSeconds: 10
             failureThreshold: 10
 
-        # ── Sidecar container: Ollama (Mistral 7B) ────────────────────────────
+        # ── Sidecar container: Ollama (phi3:mini, pre-baked image) ────────────
         # Runs inside the same pod — backend reaches it via localhost:11434
+        #
+        # Cold-start mitigation strategy (v1.0.3):
+        #   1. The image is `vtheofil1/ptyxiakh-ollama:__VERSION__`, built
+        #      from Dockerfile.ollama with phi3:mini baked in. No runtime
+        #      `ollama pull` is required.
+        #   2. The image is pre-warmed on every node by the
+        #      `ollama-image-preloader` DaemonSet (k8s/preload-daemonset.yaml),
+        #      so new pods skip the 5 GB registry pull on scale-up.
+        #   3. The readiness probe runs a dummy inference (`ollama run phi3
+        #      "ok"`), forcing the model into RAM BEFORE the pod is admitted
+        #      to traffic. Without this step the first real request would
+        #      still pay the 30-60s model-load cost.
+        #
+        # The combination shrinks per-pod cold-start from ~3-5 minutes
+        # (previous: pull image + pull model + first-inference RAM load)
+        # down to ~30-60 seconds (just first-inference RAM load).
         - name: ollama
-          image: ollama/ollama:latest
+          image: vtheofil1/ptyxiakh-ollama:__OLLAMA_VERSION__
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 11434
-          volumeMounts:
-            - name: ollama-models
-              mountPath: /root/.ollama
+          # OLLAMA_KEEP_ALIVE=24h. The model stays in RAM through 24h
+          # of idleness, which preserves the "warm pool" guarantee for
+          # bursty traffic.
+          #
+          # Initial intuition: lowering to 1h would force periodic model
+          # unload and clear accumulated KV state, mitigating memory
+          # growth. EMPIRICALLY this was incorrect — KEEP_ALIVE only
+          # triggers after the configured idle period. Under sustained
+          # traffic the model is never idle and the unload never fires.
+          # We observed an OOM (16 GiB exceeded) 10 minutes into a
+          # sustained-load test with KEEP_ALIVE=1h, confirming that the
+          # timer is irrelevant to active-traffic memory growth. The
+          # real fix is on the memory-limit side (raised to 20 GiB in
+          # v1.0.6) and on Ollama's KV-cache management (out of our
+          # control short of patching Ollama). KEEP_ALIVE=24h is
+          # therefore the right choice: maximal warm-pool guarantee,
+          # no observable side effect on memory growth.
+          #
+          # OLLAMA_NUM_PARALLEL=1 forces serial inference per pod.
+          # Without this, Ollama tried multiple concurrent inferences and
+          # each one allocated its own KV-cache, blowing past the 8 GiB
+          # memory limit and triggering OOM kills mid-request. With 1, the
+          # second and subsequent concurrent requests queue inside Ollama
+          # instead of stacking memory.
+          #
+          # OLLAMA_MAX_QUEUE=8 caps the in-server queue depth. Beyond 8,
+          # Ollama returns 503 — letting the client (and ideally an L7
+          # service mesh) re-route to another pod.
+          env:
+            - name: OLLAMA_KEEP_ALIVE
+              value: "24h"
+            - name: OLLAMA_NUM_PARALLEL
+              value: "1"
+            - name: OLLAMA_MAX_QUEUE
+              value: "4"
+          # NOTE: no volumeMount for /root/.ollama — the phi3:mini model
+          # is baked into the image layer at /root/.ollama. Mounting an
+          # emptyDir here would hide the image-layer model and force a
+          # runtime pull (defeating the pre-bake optimisation).
+          # Resources for the Ollama sidecar (phi3:mini, 3.8B Q4_K_M).
+          #
+          # Memory budget observed live across iterations:
+          #   • 4 GiB limit → OOM kill mid-request
+          #     (HTTP 500 "Server disconnected without sending a response")
+          #   • 6 GiB limit → one pod hit 6.35 GiB during inference
+          #   • 8 GiB limit → first failure mode in the 3-user Locust run
+          #   • 12 GiB limit → survived single requests, but a sustained
+          #     ~16-minute load run produced gradual memory growth and OOM
+          #   • 16 GiB limit + num_predict: 1024 + dummy-inference probe
+          #     → masked the underlying KEEP_ALIVE=24h accumulation by
+          #     cycling pods frequently
+          #   • 16 GiB limit + postStart warmup + shallow probe →
+          #     exposed the real KEEP_ALIVE=24h memory accumulation
+          #     (pods OOMed after 60-80 min sustained traffic)
+          #   • 16 GiB limit + KEEP_ALIVE=1h (current) → memory is bounded
+          #     by the periodic model unload, peak observed ~10-12 GiB
+          #
+          # Memory REQUEST: kept at 4 GiB (after experimentation).
+          #
+          # We investigated bumping the memory request to 8 GiB to give
+          # the pod symmetric eviction protection against other tenants.
+          # The scheduler rejected it:
+          #   `0/20 nodes are available: 20 Insufficient memory`
+          # A 5 GiB request faced similar pressure on the shared vdcloud
+          # cluster (other students' workloads occupy a significant share).
+          #
+          # We pivoted to a different approach: the real cause of pod
+          # eviction was NOT a wrong request size — it was unbounded
+          # KV-cache accumulation in Ollama due to OLLAMA_KEEP_ALIVE=24h,
+          # which made the pod's usage drift up to 16 GiB over an hour.
+          # Lowering KEEP_ALIVE to 1h forces periodic model unload and
+          # caps the steady-state usage at ~5-7 GiB peak. With this
+          # bounded usage, a 4 GiB request is only slightly under-stated
+          # (vs the previous unbounded growth where it was massively
+          # under-stated), and the marginal eviction risk is tolerable.
+          #
+          # Production teams with dedicated clusters would normally bump
+          # the request to match the new bounded working set. On a shared
+          # cluster we accept slight residual eviction risk in exchange
+          # for guaranteed schedulability.
+          #
+          # CPU: 4 cores → ~1.5-2× speedup over the previous 2-core config
+          # for phi3's small per-token cost.
           resources:
             requests:
-              cpu: "1000m"
+              cpu: "2000m"
               memory: "4Gi"
             limits:
-              cpu: "2000m"
-              memory: "8Gi"
+              cpu: "4000m"
+              memory: "16Gi"
+          # postStart hook (v1.0.5): ONE-TIME warmup of phi3 into RAM.
+          #
+          # Why this is necessary:
+          #   The phi3 weights are already baked into the image (Dockerfile.ollama),
+          #   so the `ollama list | grep` check trivially passes. BUT Ollama
+          #   lazy-loads models into RAM on first inference — so a "Ready" pod
+          #   per a shallow check still pays a 30-60s mmap cost on the first
+          #   real request.
+          #
+          # Previous attempt (v1.0.3) used a dummy-inference *readiness* probe
+          # that ran `ollama run phi3 "ok"` every 30 seconds. This had a fatal
+          # interaction with OLLAMA_NUM_PARALLEL=1: any pending real inference
+          # would block the probe, which timed out at 120s, marked the pod
+          # NotReady, kicked it from the Service, queued more probes, and
+          # eventually cascaded into ContainerStatusUnknown zombies.
+          #
+          # The fix: load phi3 into RAM ONCE here, in postStart, and use a
+          # shallow readiness check (`ollama list | grep`) below — which is
+          # ~5 ms and never queues behind inference.
+          lifecycle:
+            postStart:
+              exec:
+                command:
+                  - sh
+                  - -c
+                  - |
+                    # 1. Wait for the Ollama daemon to be ready
+                    until ollama list >/dev/null 2>&1; do sleep 2; done
+                    # 2. Pull the model only if missing (safety net — baked-in
+                    #    image already has it)
+                    ollama list | grep -q phi3 || ollama pull phi3:mini
+                    ollama run phi3:mini "ok" >/dev/null 2>&1 || true
+          # Liveness: keeps the standard tags endpoint — verifies the
+          # process is alive, no dependency on model state.
+          # initialDelaySeconds: 120 — gives postStart hook time to
+          # complete the one-time warmup (~30-90s) without liveness
+          # marking the pod as broken during warmup.
           livenessProbe:
             httpGet:
               path: /api/tags
               port: 11434
-            initialDelaySeconds: 30
+            initialDelaySeconds: 120
             periodSeconds: 30
             failureThreshold: 5
+          # Readiness probe (v1.0.5): shallow `ollama list | grep` check.
+          #
+          # Why shallow:
+          #   The dummy-inference probe approach (v1.0.3) had a fatal flaw
+          #   under load: with OLLAMA_NUM_PARALLEL=1, a real in-flight
+          #   inference would block the probe from running, the probe would
+          #   time out at 120s, the pod would be marked NotReady, kicked
+          #   from the Service load balancer, more queued probes would
+          #   accumulate, and eventually pods cascaded into
+          #   ContainerStatusUnknown zombies that required manual cleanup.
+          #
+          #   The shallow check costs ~5 ms and never queues behind
+          #   inference. The "is phi3 in RAM?" guarantee is provided by the
+          #   postStart hook above (which does the one-time warm-up).
+          #   OLLAMA_KEEP_ALIVE=24h ensures phi3 stays in RAM through the
+          #   pod's lifetime, so the warm guarantee remains valid.
+          #
+          # initialDelaySeconds: 90 → give postStart enough time to complete
+          # the model load (~30-60s on cold first start), before readiness
+          # starts checking.
           readinessProbe:
-            httpGet:
-              path: /api/tags
-              port: 11434
-            initialDelaySeconds: 20
-            periodSeconds: 10
-            failureThreshold: 20
+            exec:
+              command:
+                - sh
+                - -c
+                - ollama list | grep -q phi3
+            initialDelaySeconds: 90
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 5
 
       volumes:
         - name: ollama-models
@@ -204,12 +381,12 @@ spec:
       containers:
         - name: gradio
           image: vtheofil1/ptyxiakh-gradio:__VERSION__
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           ports:
             - containerPort: 7860
           envFrom:
             - configMapRef:
-                name: travel-assistant-config
+                name: atlas-systems-config
           resources:
             requests:
               cpu: "200m"

@@ -29,7 +29,7 @@ FROM python:3.11-slim AS runtime
 
 WORKDIR /app
 
-# curl is needed by entrypoint.sh to health-check ChromaDB and Ollama
+# curl is used by Kubernetes init container to health-check ChromaDB
 RUN apt-get update && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
 
@@ -52,16 +52,16 @@ SentenceTransformer('intfloat/multilingual-e5-small')"
 # Copy application code
 COPY app/    ./app/
 COPY data/   ./data/
-COPY entrypoint.sh ./
 
 # Non-root user (professor's pattern #12)
 RUN useradd --no-create-home --shell /bin/false appuser \
-    && chmod +x entrypoint.sh \
     && chown -R appuser:appuser /app
 
 USER appuser
 
 EXPOSE 8000
 
-# entrypoint.sh handles waiting for dependencies, ingestion, then starts uvicorn
-ENTRYPOINT ["./entrypoint.sh"]
+# In Kubernetes, an initContainer runs `python -m app.ingest` before this
+# starts, and the readiness probe on ChromaDB/Ollama gates traffic. In
+# docker-compose, depends_on with healthcheck handles dependency ordering.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

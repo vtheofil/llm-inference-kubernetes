@@ -1,0 +1,52 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: locustfile-config
+  namespace: vtheofil-priv
+data:
+  locustfile.py: |
+    import random
+    from locust import HttpUser, task, between
+
+    ENTERPRISE_QUERIES = [
+        "Who is the CEO of Atlas Systems?",
+        "When was Atlas Systems founded?",
+        "How many offices does Atlas Systems have?",
+        "What is the annual training budget per employee?",
+        "How do I reset my VPN password?",
+        "Who is the project manager for Atlas?",
+        "What is the budget of Project Phoenix?",
+        "How many days of annual leave after 5 years of service?",
+        "What technology partnerships does Atlas have?",
+        "Which department does Allison Hill work in?"
+    ]
+
+    class EnterpriseUser(HttpUser):
+        wait_time = between(1, 5)
+
+        # Force a new TCP connection per request so kube-proxy random L4
+        # selection re-rolls the pod for each call. Without this, every
+        # Locust worker reuses the same persistent connection and
+        # therefore the same backend pod, defeating the autoscaling demo.
+        _NO_KEEPALIVE = {"Connection": "close"}
+
+        @task(10)
+        def chat(self):
+            query = random.choice(ENTERPRISE_QUERIES)
+            self.client.post(
+                "/chat",
+                json={"message": query},
+                headers=self._NO_KEEPALIVE,
+                # 900 s timeout absorbs the worst-case L4-LB queue-collision
+                # scenario: with 3 concurrent users and 5 pods, ~4% of the
+                # time all three requests land on the same backend pod
+                # (random kube-proxy selection). Each phi3 inference is ~250s
+                # and OLLAMA_NUM_PARALLEL=1 serialises them, so a triple
+                # collision serialises to ~750s, exceeding any 600s timeout.
+                # 900s also gives margin for 2-collision + long itinerary.
+                timeout=900
+            )
+
+        @task(1)
+        def health(self):
+            self.client.get("/healthz", headers=self._NO_KEEPALIVE, timeout=5)

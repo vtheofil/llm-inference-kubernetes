@@ -1,27 +1,65 @@
-# Python
+# ── Python ─────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *.pyo
-.env
 *.egg-info/
 dist/
 build/
+
+# ── Virtual environments ───────────────────────────────────────────
 .venv/
+.venv-*/
 venv/
+env/
 
-# ChromaDB local data (populated at runtime, not committed)
+# ── Secrets / credentials ──────────────────────────────────────────
+.env
+.env.*
+*.pem
+*.key
+credentials.json
+
+# ── ChromaDB local data (populated at runtime) ─────────────────────
 chroma_db/
+chromadb_data/
 
-# Sentence-transformers / HuggingFace model cache
+# ── Sentence-transformers / HuggingFace model cache ────────────────
 .cache/
+.huggingface/
 
-# Logs
+# ── Logs ───────────────────────────────────────────────────────────
 *.log
+scheduler_log.txt
 
-# OS
+# ── Test outputs ───────────────────────────────────────────────────
+locust/results/
+*.csv
+
+# ── OS junk ────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
+desktop.ini
 
-# Docker
-.dockerignore
+# ── IDE ────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+
+# ── Claude Code sessions ───────────────────────────────────────────
 .claude/
+
+# ── Thesis folder — keep ONLY the final PDF + presentation ────────
+# Everything else in thesis/ is working files (extracted images,
+# intermediate scripts, node_modules, review folders)
+thesis/*
+!thesis/Theofilogiannakos_Vasileios_Thesis_v1.1_FINAL.pdf
+!thesis/Parousiasi_Theofilogiannakos.pptx
+
+# ── Personal notes / random files ──────────────────────────────────
+dit_study_guide_raw.txt
+*.zip
+build-*.log
+push-*.log
+
+# ── Old / deprecated folders ───────────────────────────────────────
+k8s-minikube/
