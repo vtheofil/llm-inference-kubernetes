@@ -190,9 +190,10 @@ locust -f locust/locustfile.py --host http://localhost:8000
 
 ---
 
-## 📚 Full thesis (Greek)
+## 📚 Full thesis and defense presentation (Greek)
 
-See [`thesis/Theofilogiannakos_Vasileios_Thesis.pdf`](thesis/Theofilogiannakos_Vasileios_Thesis.pdf) for the complete 100+ page document, including theoretical background, related work, detailed experimental protocol, and quality evaluation.
+- 📄 **[Thesis text (PDF)](thesis/Theofilogiannakos_Vasileios_Thesis_v1.1_FINAL.pdf)** — complete 100+ page document with theoretical background, related work, experimental protocol, and quality evaluation.
+- 🎬 **[Defense presentation (PPTX)](thesis/Theofilogiannakos_Vasileios_Thesis_Presentation.pptx)** — the slides used in the July 2026 defense.
 
 ---
 
@@ -204,4 +205,4 @@ Special thanks to **Prof. Ioannis Konstantinou** for the supervision, guidance, 
 
 ## 📄 License
 
-MIT — see [LICENSE](LICENSE) if provided.
+MIT — see [LICENSE](./LICENSE).
